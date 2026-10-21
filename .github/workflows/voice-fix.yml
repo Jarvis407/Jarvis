@@ -1,0 +1,307 @@
+name: Build Jarvis Voice Fix
+on:
+  workflow_dispatch:
+
+jobs:
+  android-apk:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Get original Jarvis source
+        uses: actions/checkout@v4
+      - name: Java for installing the Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android tools
+        uses: android-actions/setup-android@v3
+      - name: Install SDK API 29 for original project
+        run: sdkmanager --install 'platforms;android-29' 'build-tools;29.0.3' 'platform-tools'
+      - name: Java 8 for legacy Gradle 5.6 / Android plugin 3.5.4
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+      - name: Apply voice fix to v1.6.4
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          #!/usr/bin/env python3
+          """Patch HyperionElectronicsCo/Jarvis v1.6.4 in place for spoken long replies.
+          
+          No network access, no API secrets. Run from the extracted repository root.
+          The default also changes the package name so the original Jarvis stays installed.
+          """
+          from pathlib import Path
+          
+          ROOT = Path(__file__).resolve().parent
+          # Also work when script is copied inside .github/workflows or project root.
+          if not (ROOT / 'app').is_dir():
+              ROOT = Path.cwd()
+          
+          
+          def replace_once(data, old, new, desc):
+              count = data.count(old)
+              if count != 1:
+                  raise RuntimeError('%s: expected 1 source match; got %s. Check repository version.' % (desc, count))
+              return data.replace(old, new, 1)
+          
+          service_path = ROOT / 'app/src/main/java/com/hyperion/jarvis/JarvisAssistantService.java'
+          service = service_path.read_text(encoding='utf-8')
+          service = replace_once(
+              service,
+              '    private String pendingFinalText;\n',
+              '    private String pendingFinalText;\n    private String lastLongAnswer; // In memory only: no AI text written to disk.\n',
+              'remember full answer',
+          )
+          service = replace_once(
+              service,
+              '''    private void runCommand(String command) {
+                  updateNotification("Command: " + command);
+                  String response = JarvisCommandCenter.processCommand(this, command, this);
+          ''',
+              '''    private void runCommand(String command) {
+                  updateNotification("Command: " + command);
+                  // Intercept here; the original 'read aloud' handler exists only in MainActivity.
+                  String lower = command == null ? "" : command.trim().toLowerCase(Locale.UK);
+                  if (lower.equals("read that out loud") || lower.equals("read it out loud")
+                          || lower.equals("read the full output") || lower.equals("read the last response")
+                          || lower.equals("speak the full output") || lower.equals("say the full output")
+                          || lower.equals("read aloud")) {
+                      if (lastLongAnswer == null || lastLongAnswer.trim().length() == 0) {
+                          speak("I do not have a previous long answer to read yet.", true);
+                      } else {
+                          speak(lastLongAnswer, true);
+                      }
+                      return;
+                  }
+                  String response = JarvisCommandCenter.processCommand(this, command, this);
+          ''',
+              'voice read-back handler',
+          )
+          start = '    private void speak(String text, boolean restartAfter) {\n'
+          end = '    private int countWords(String text) {\n'
+          if service.count(start) != 1 or service.count(end) != 1:
+              raise RuntimeError('Cannot locate the original service speech method')
+          first, tail = service.split(start, 1)
+          old_body, after = tail.split(end, 1)
+          if 'countWords(text) > 30' not in old_body or 'I displayed the full response in Jarvis' not in old_body:
+              raise RuntimeError('The original 30-word cutoff is missing; source may have changed')
+          service = first + '''    private void speak(String text, boolean restartAfter) {
+                  if (text == null || text.length() == 0) {
+                      if (restartAfter) {
+                          startListeningSoon(650);
+                      }
+                      return;
+                  }
+                  // Keep recent long answers for read-back, without persisting private AI text.
+                  if (countWords(text) > 30) {
+                      lastLongAnswer = text;
+                  }
+                  updateNotification(text);
+                  pendingRestartAfterSpeech = restartAfter;
+                  try {
+                      if (speechRecognizer != null) {
+                          speechRecognizer.cancel();
+                      }
+                  } catch (Exception ignored) {
+                  }
+                  listening = false;
+                  if (muted || !ttsReady || textToSpeech == null) {
+                      if (restartAfter) {
+                          startListeningSoon(950);
+                      }
+                      return;
+                  }
+                  // Android TTS has a per-utterance character limit. Queue manageable chunks.
+                  // Only the final chunk has a '_final' ID so recognition restarts after
+                  // the entire answer, rather than interrupting the assistant mid-sentence.
+                  final int maxChunk = 3000;
+                  int offset = 0;
+                  int chunkIndex = 0;
+                  String prefix = "jarvis_service_" + System.currentTimeMillis();
+                  while (offset < text.length()) {
+                      int limit = Math.min(offset + maxChunk, text.length());
+                      if (limit < text.length()) {
+                          int boundary = text.lastIndexOf(' ', limit);
+                          if (boundary > offset + 1000) {
+                              limit = boundary;
+                          }
+                      }
+                      String segment = text.substring(offset, limit).trim();
+                      offset = limit;
+                      if (segment.length() == 0) {
+                          continue;
+                      }
+                      int queueMode = chunkIndex == 0 ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
+                      String id = prefix + "_" + chunkIndex + (offset >= text.length() ? "_final" : "_part");
+                      if (Build.VERSION.SDK_INT >= 21) {
+                          textToSpeech.speak(segment, queueMode, null, id);
+                      } else {
+                          HashMap<String, String> params = new HashMap<String, String>();
+                          params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id);
+                          textToSpeech.speak(segment, queueMode, params);
+                      }
+                      chunkIndex++;
+                  }
+                  if (chunkIndex == 0 && restartAfter) {
+                      pendingRestartAfterSpeech = false;
+                      startListeningSoon(650);
+                  }
+              }
+          ''' + end + after
+          service = replace_once(
+              service,
+              '''                public void onDone(String utteranceId) {
+                              handler.post(new Runnable() {
+          ''',
+              '''                public void onDone(String utteranceId) {
+                              if (utteranceId == null || !utteranceId.endsWith("_final")) {
+                                  return;
+                              }
+                              handler.post(new Runnable() {
+          ''',
+              'restart after final spoken chunk',
+          )
+          service = replace_once(
+              service,
+              '''                public void onError(String utteranceId) {
+                              handler.post(new Runnable() {
+          ''',
+              '''                public void onError(String utteranceId) {
+                              if (utteranceId == null || !utteranceId.endsWith("_final")) {
+                                  return;
+                              }
+                              handler.post(new Runnable() {
+          ''',
+              'restart after final TTS error',
+          )
+          service_path.write_text(service, encoding='utf-8')
+          
+          # The foreground interface has the same 30-word cutoff; remove it as well.
+          main_path = ROOT / 'app/src/main/java/com/hyperion/jarvis/MainActivity.java'
+          main = main_path.read_text(encoding='utf-8')
+          start_main = '    private void speakInternal(String text, boolean forceFullSpeech) {\n'
+          end_main = '    private boolean shouldDisplayOnly(String text) {\n'
+          if main.count(start_main) != 1 or main.count(end_main) != 1:
+              raise RuntimeError('Cannot find main-screen voice output function')
+          first, remaining = main.split(start_main, 1)
+          old_main_speech, rest = remaining.split(end_main, 1)
+          if 'I displayed the full response on screen' not in old_main_speech:
+              raise RuntimeError('Expected main-screen 30-word cutoff not found')
+          main = first + '''    private void speakInternal(String text, boolean forceFullSpeech) {
+                  if (text == null || text.length() == 0) {
+                      return;
+                  }
+                  appendConsole("JARVIS: " + text);
+                  transcriptView.setText(text);
+                  lastFullSpokenText = text;
+                  if (muted || !ttsReady || textToSpeech == null) {
+                      hudView.setMode(JarvisHudView.MODE_IDLE);
+                      setStatus("SYSTEM READY");
+                      if (restartListeningAfterSpeech) {
+                          restartListeningAfterSpeech = false;
+                          handler.postDelayed(new Runnable() {
+                              public void run() {
+                                  startListening();
+                              }
+                          }, 350);
+                      }
+                      return;
+                  }
+                  hudView.setMode(JarvisHudView.MODE_SPEAKING);
+                  setStatus("SPEAKING...");
+                  int offset = 0;
+                  int chunkIndex = 0;
+                  final int maxChunk = 3000;
+                  String prefix = "jarvis_" + System.currentTimeMillis();
+                  while (offset < text.length()) {
+                      int limit = Math.min(offset + maxChunk, text.length());
+                      if (limit < text.length()) {
+                          int boundary = text.lastIndexOf(' ', limit);
+                          if (boundary > offset + 1000) {
+                              limit = boundary;
+                          }
+                      }
+                      String segment = text.substring(offset, limit).trim();
+                      offset = limit;
+                      if (segment.length() == 0) {
+                          continue;
+                      }
+                      int queueMode = chunkIndex == 0 ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
+                      String utteranceId = prefix + "_" + chunkIndex + (offset >= text.length() ? "_final" : "_part");
+                      if (Build.VERSION.SDK_INT >= 21) {
+                          textToSpeech.speak(segment, queueMode, null, utteranceId);
+                      } else {
+                          HashMap<String, String> params = new HashMap<String, String>();
+                          params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
+                          textToSpeech.speak(segment, queueMode, params);
+                      }
+                      chunkIndex++;
+                  }
+              }
+          ''' + end_main + rest
+          main = replace_once(
+              main,
+              '''                public void onDone(String utteranceId) {
+                              runOnUiThread(new Runnable() {
+          ''',
+              '''                public void onDone(String utteranceId) {
+                              if (utteranceId == null || !utteranceId.endsWith("_final")) {
+                                  return;
+                              }
+                              runOnUiThread(new Runnable() {
+          ''',
+              'main screen restart after final TTS chunk',
+          )
+          main = replace_once(
+              main,
+              '''                public void onError(String utteranceId) {
+                              runOnUiThread(new Runnable() {
+          ''',
+              '''                public void onError(String utteranceId) {
+                              if (utteranceId == null || !utteranceId.endsWith("_final")) {
+                                  return;
+                              }
+                              runOnUiThread(new Runnable() {
+          ''',
+              'main screen final TTS error',
+          )
+          main_path.write_text(main, encoding='utf-8')
+          
+          # Install alongside the working Jarvis debug APK, which has an unknown signing key.
+          gradle_path = ROOT / 'app/build.gradle'
+          gradle = gradle_path.read_text(encoding='utf-8')
+          gradle = replace_once(gradle, 'applicationId "com.hyperion.jarvis"', 'applicationId "com.hyperion.jarvis.voicefix"', 'side-by-side app ID')
+          gradle = replace_once(gradle, 'versionCode 64', 'versionCode 65', 'test build version')
+          gradle = replace_once(gradle, 'versionName "1.6.4"', 'versionName "1.6.4-voicefix1"', 'test build name')
+          gradle_path.write_text(gradle, encoding='utf-8')
+          
+          manifest_path = ROOT / 'app/src/main/AndroidManifest.xml'
+          manifest = manifest_path.read_text(encoding='utf-8')
+          manifest = replace_once(manifest, 'android:authorities="com.hyperion.jarvis.imageprovider"', 'android:authorities="com.hyperion.jarvis.voicefix.imageprovider"', 'side-by-side provider')
+          manifest_path.write_text(manifest, encoding='utf-8')
+          
+          provider_path = ROOT / 'app/src/main/java/com/hyperion/jarvis/JarvisImageShareProvider.java'
+          provider = provider_path.read_text(encoding='utf-8')
+          provider = replace_once(provider, 'AUTHORITY = "com.hyperion.jarvis.imageprovider"', 'AUTHORITY = "com.hyperion.jarvis.voicefix.imageprovider"', 'side-by-side URI routing')
+          provider_path.write_text(provider, encoding='utf-8')
+          
+          strings_path = ROOT / 'app/src/main/res/values/strings.xml'
+          strings = strings_path.read_text(encoding='utf-8')
+          strings = replace_once(strings, '<string name="app_name">Jarvis</string>', '<string name="app_name">Jarvis Voice Fix</string>', 'test app label')
+          strings_path.write_text(strings, encoding='utf-8')
+          print('Patched Jarvis v1.6.4: full spoken answers, voice read-back, side-by-side installation.')
+          PYTHON
+      - name: Build debug APK
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon assembleDebug
+      - name: Publish APK for download
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-voice-fix-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
