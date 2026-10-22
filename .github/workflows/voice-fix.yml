@@ -295,6 +295,102 @@ jobs:
           strings_path.write_text(strings, encoding='utf-8')
           print('Patched Jarvis v1.6.4: full spoken answers, voice read-back, side-by-side installation.')
           PYTHON
+      - name: Apply three-in-one update
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          root = Path('app/src/main/java/com/hyperion/jarvis')
+          def change(path, old, new, label):
+              data = path.read_text()
+              if data.count(old) != 1:
+                  raise RuntimeError('%s: expected one match, found %d' % (label, data.count(old)))
+              path.write_text(data.replace(old, new, 1))
+
+          commands = root / 'JarvisCommandCenter.java'
+          change(commands, 'String[] phrases = new String[] { "okay jarvis", "ok jarvis", "hey jarvis", "hello jarvis", "jarvis" };', 'String[] phrases = new String[] { "hey jarvis", "okay jarvis", "ok jarvis", "hello jarvis", "jarvis" };', 'wake phrase priority')
+          change(commands, 'You can say okay Jarvis, then ask me anything once an AI key is imported,', 'You can say Hey Jarvis, then ask me anything using free AI when available,', 'spoken help')
+          change(commands, '''        if (isQuestion(lower)) {
+                      if (true) {
+                          startAIRequest(context, command, lower, output);
+                          return getAIWorkingMessage(lower);
+                      }
+                      openWebSearch(context, command, output);
+                      return "I will search Google for that.";
+                  }''', '''        if (isQuestion(lower)) {
+                      startAIRequest(context, command, lower, output);
+                      return getAIWorkingMessage(lower);
+                  }''', 'question routing')
+          change(commands, '''        if (shouldSendToAI(lower) && JarvisOnlineBrain.hasApiKey(context)) {
+                      startAIRequest(context, command, lower, output);
+                      return getAIWorkingMessage(lower);
+                  }
+
+                  if (JarvisOnlineBrain.hasApiKey(context)) {
+                      startAIRequest(context, command, lower, output);
+                      return getAIWorkingMessage(lower);
+                  }
+
+                  return "I heard, " + command + ". I do not have a local action for that yet. Import an AI key and I can answer this directly, or say search for followed by your question to ask Google.";''', '''        // The existing online brain has a no-key fallback.
+                  startAIRequest(context, command, lower, output);
+                  return getAIWorkingMessage(lower);''', 'free AI routing')
+          main = root / 'MainActivity.java'
+          change(main, 'appendConsole("BOOT: Say OKAY JARVIS, tap LISTEN, or type a command.");', 'appendConsole("BOOT: Say HEY JARVIS in background mode, tap LISTEN, or type a command.");', 'wake phrase display')
+          change(main, '''        try {
+                      stopListeningSilently();
+                      listening = true;
+                      vibrateShort();
+                      speechRecognizer.startListening(recognizerIntent);
+                  } catch (Exception error) {
+                      listening = false;
+                      hudView.setMode(JarvisHudView.MODE_IDLE);
+                      appendConsole("VOICE ERROR: " + error.getMessage());
+                      speak("I could not start listening. You can type the command instead.");
+                  }''', '''        // Stop the background listener before starting the foreground recognizer.
+                  if (JarvisCommandCenter.isBackgroundEnabled(this)) {
+                      JarvisCommandCenter.setBackgroundEnabled(this, false);
+                      JarvisCommandCenter.stopBackgroundService(this);
+                      updateBackgroundButton();
+                  }
+                  stopListeningSilently();
+                  handler.postDelayed(new Runnable() {
+                      public void run() {
+                          if (speechRecognizer == null || listening || isFinishing()) return;
+                          try {
+                              listening = true;
+                              vibrateShort();
+                              speechRecognizer.startListening(recognizerIntent);
+                          } catch (Exception error) {
+                              listening = false;
+                              appendConsole("VOICE ERROR: " + error.getMessage());
+                          }
+                      }
+                  }, 450);''', 'foreground recognizer start')
+          change(main, '''                if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                              speak("I could not access the voice system. You can type the command instead.");
+                          }''', '''                if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+                              handler.postDelayed(new Runnable() {
+                                  public void run() { if (!isFinishing()) startListening(); }
+                              }, 1200);
+                          } else if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                              speak("I could not access the voice system. You can type the command instead.");
+                          }''', 'busy recognizer retry')
+          service = root / 'JarvisAssistantService.java'
+          service.write_text(service.read_text().replace('Listening for okay Jarvis', 'Listening for Hey Jarvis'))
+          change(service, '''        try {
+                      speechRecognizer.cancel();
+                  } catch (Exception ignored) {
+                  }
+                  try {
+                      listening = true;
+                      speechRecognizer.startListening(recognizerIntent);''', '''        // Avoid cancel/start in the same instant on older Android versions.
+                  try {
+                      listening = true;
+                      speechRecognizer.startListening(recognizerIntent);''', 'background recognizer start')
+          gradle = Path('app/build.gradle')
+          change(gradle, 'versionCode 65', 'versionCode 66', 'version code')
+          change(gradle, 'versionName "1.6.4-voicefix1"', 'versionName "1.6.4-heyjarvis2"', 'version name')
+          print('Three-in-one update applied')
+          PYTHON
       - name: Build debug APK
         run: |
           chmod +x ./gradlew
