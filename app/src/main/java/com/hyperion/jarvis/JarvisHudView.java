@@ -314,8 +314,8 @@ public class JarvisHudView extends View {
         canvas.drawText("VOICE CORE ONLINE", dp(24.0f), height - dp(22.0f), textPaint);
 
         textPaint.setTextAlign(Paint.Align.RIGHT);
-        canvas.drawText("NO LAMBDA JAVA HUD", width - dp(24.0f), height - dp(36.0f), textPaint);
-        canvas.drawText("AIDE READY", width - dp(24.0f), height - dp(22.0f), textPaint);
+        canvas.drawText("J.A.R.V.I.S. SYSTEMS", width - dp(24.0f), height - dp(36.0f), textPaint);
+        canvas.drawText("ALL SYSTEMS NOMINAL", width - dp(24.0f), height - dp(22.0f), textPaint);
     }
 
     private float dp(float value) {
