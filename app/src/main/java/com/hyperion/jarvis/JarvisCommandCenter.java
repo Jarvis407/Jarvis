@@ -369,7 +369,7 @@ public final class JarvisCommandCenter {
         }
 
         if (isQuestion(lower)) {
-            if (JarvisOnlineBrain.hasApiKey(context)) {
+            if (true) {
                 startAIRequest(context, command, lower, output);
                 return getAIWorkingMessage(lower);
             }
