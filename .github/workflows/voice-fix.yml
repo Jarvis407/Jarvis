@@ -274,19 +274,19 @@ jobs:
           # Install alongside the working Jarvis debug APK, which has an unknown signing key.
           gradle_path = ROOT / 'app/build.gradle'
           gradle = gradle_path.read_text(encoding='utf-8')
-          gradle = replace_once(gradle, 'applicationId "com.hyperion.jarvis"', 'applicationId "com.hyperion.jarvis.voicefix"', 'side-by-side app ID')
+          gradle = replace_once(gradle, 'applicationId "com.hyperion.jarvis"', 'applicationId "com.hyperion.jarvis.voicefix3"', 'side-by-side app ID')
           gradle = replace_once(gradle, 'versionCode 64', 'versionCode 65', 'test build version')
-          gradle = replace_once(gradle, 'versionName "1.6.4"', 'versionName "1.6.4-voicefix1"', 'test build name')
+          gradle = replace_once(gradle, 'versionName "1.6.4"', 'versionName "1.6.4-voicefix3"', 'test build name')
           gradle_path.write_text(gradle, encoding='utf-8')
           
           manifest_path = ROOT / 'app/src/main/AndroidManifest.xml'
           manifest = manifest_path.read_text(encoding='utf-8')
-          manifest = replace_once(manifest, 'android:authorities="com.hyperion.jarvis.imageprovider"', 'android:authorities="com.hyperion.jarvis.voicefix.imageprovider"', 'side-by-side provider')
+          manifest = replace_once(manifest, 'android:authorities="com.hyperion.jarvis.imageprovider"', 'android:authorities="com.hyperion.jarvis.voicefix3.imageprovider"', 'side-by-side provider')
           manifest_path.write_text(manifest, encoding='utf-8')
           
           provider_path = ROOT / 'app/src/main/java/com/hyperion/jarvis/JarvisImageShareProvider.java'
           provider = provider_path.read_text(encoding='utf-8')
-          provider = replace_once(provider, 'AUTHORITY = "com.hyperion.jarvis.imageprovider"', 'AUTHORITY = "com.hyperion.jarvis.voicefix.imageprovider"', 'side-by-side URI routing')
+          provider = replace_once(provider, 'AUTHORITY = "com.hyperion.jarvis.imageprovider"', 'AUTHORITY = "com.hyperion.jarvis.voicefix3.imageprovider"', 'side-by-side URI routing')
           provider_path.write_text(provider, encoding='utf-8')
           
           strings_path = ROOT / 'app/src/main/res/values/strings.xml'
@@ -388,7 +388,7 @@ jobs:
                       speechRecognizer.startListening(recognizerIntent);''', 'background recognizer start')
           gradle = Path('app/build.gradle')
           change(gradle, 'versionCode 65', 'versionCode 66', 'version code')
-          change(gradle, 'versionName "1.6.4-voicefix1"', 'versionName "1.6.4-heyjarvis2"', 'version name')
+          change(gradle, 'versionName "1.6.4-voicefix3"', 'versionName "1.6.4-heyjarvis3"', 'version name')
           print('Three-in-one update applied')
           PYTHON
       - name: Build debug APK
